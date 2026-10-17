@@ -17,6 +17,11 @@ from telegram import (
     InlineKeyboardMarkup,
     InputMediaPhoto,
     LinkPreviewOptions,
+    BotCommand,
+    BotCommandScopeDefault,
+    BotCommandScopeAllPrivateChats,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
 )
 from telegram.ext import (
     Application,
@@ -80,6 +85,9 @@ PENDING_TTL = 30 * 60  # ۳۰ دقیقه
 
 NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
+# متن دکمه استارت (در یک جا تعریف شده تا همه‌جا یکسان باشد)
+START_BUTTON_TEXT = "🚀 استارت"
+
 
 # ---------------- Health Server ----------------
 
@@ -99,6 +107,40 @@ def start_health_server():
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
     logger.info("Health server started on port %s", port)
     server.serve_forever()
+
+
+# ---------------- Bot Commands (منوی آبی کنار کیبورد) ----------------
+
+async def setup_bot_commands(app: Application):
+    commands = [
+        BotCommand("start", START_BUTTON_TEXT),
+    ]
+
+    await app.bot.set_my_commands(
+        commands,
+        scope=BotCommandScopeDefault(),
+    )
+
+    await app.bot.set_my_commands(
+        commands,
+        scope=BotCommandScopeAllPrivateChats(),
+    )
+
+    logger.info("Bot commands configured.")
+
+
+# ---------------- Reply Keyboard (کیبورد پایین) ----------------
+
+def get_main_reply_keyboard() -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton(START_BUTTON_TEXT)],
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="لینک توییت را بفرست یا استارت بزن...",
+    )
 
 
 # ---------------- URL helpers ----------------
@@ -621,8 +663,23 @@ async def start(
         "لینک یک توییت (پست) از توییتر / X را بفرست.\n"
         "متن، عکس‌ها و ویدئوهای توییت را برایت می‌فرستم؛ "
         "برای ویدئو می‌توانی کیفیت را انتخاب کنی. 🎬🖼\n\n"
-        "فقط محتوایی را دانلود کن که مال خودت است یا اجازه‌اش را داری."
+        "فقط محتوایی را دانلود کن که مال خودت است یا اجازه‌اش را داری.",
+        reply_markup=get_main_reply_keyboard(),
     )
+
+
+# ---------------- هندلر دکمه استارت از کیبورد پایین ----------------
+
+async def handle_reply_keyboard(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    message = update.effective_message
+    if not message or not message.text:
+        return
+
+    if message.text.strip() == START_BUTTON_TEXT:
+        await start(update, context)
 
 
 async def handle_url(
@@ -866,23 +923,43 @@ async def on_error(update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------------- Main ----------------
 
+async def post_init(app: Application):
+    await setup_bot_commands(app)
+
+
 def main():
     threading.Thread(
         target=start_health_server,
         daemon=True,
     ).start()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", start))
+
     app.add_handler(CallbackQueryHandler(on_join_check, pattern=r"^join:check$"))
     app.add_handler(CallbackQueryHandler(on_quality, pattern=r"^q:"))
+
+    # هندلر دکمه استارت از کیبورد پایین (قبل از handle_url)
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND & filters.Regex(r"^🚀 استارت$"),
+            handle_reply_keyboard,
+        )
+    )
+
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             handle_url,
         )
     )
+
     app.add_error_handler(on_error)
 
     logger.info("Twitter bot is starting...")
